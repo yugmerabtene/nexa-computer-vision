@@ -267,41 +267,62 @@ $$
 ### 6.1 Construire un CNN simple avec PyTorch
 
 ```python
-import torch
-import torch.nn as nn
-import torch.optim as optim
+import torch  # Bibliothèque principale pour les tenseurs et les réseaux de neurones
+import torch.nn as nn  # Module contenant les couches (Conv2d, Linear, ReLU, etc.)
+import torch.optim as optim  # Optimiseurs (SGD, Adam, etc.)
 
 class SimpleCNN(nn.Module):
+    """
+    CNN pédagogique pour la classification d'images (3 canaux RGB).
+    Architecture : Conv -> ReLU -> Pool -> Conv -> ReLU -> Pool -> FC -> FC
+    Entrée : (batch, 3, 32, 32)
+    Sortie : (batch, num_classes) -> logits (pas de softmax, CrossEntropyLoss l'applique en interne)
+    """
     def __init__(self, num_classes=10):
-        super().__init__()
+        super().__init__()  # Appel du constructeur parent nn.Module (obligatoire)
+
+        # ----- Bloc d'extraction de caractéristiques (features) -----
+        # Les convolutions apprennent des filtres détecteurs de motifs (bords, textures, formes)
+        # Le pooling réduit la taille spatiale et apporte de l'invariance aux translations
         self.features = nn.Sequential(
-            # Couche 1 : Convolution + ReLU + Pooling
+            # Couche 1 : Conv2d(3 canaux RGB -> 32 filtres) + ReLU + MaxPool
             nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            # Couche 2 : Convolution + ReLU + Pooling
+            # 32 filtres de taille 3x3. padding=1 préserve la taille spatiale (32x32 -> 32x32)
+            nn.ReLU(),  # Fonction d'activation ReLU : max(0, x). Élimine les activations négatives
+            nn.MaxPool2d(kernel_size=2, stride=2),  # 32x32 -> 16x16. Garde la valeur max dans chaque fenêtre 2x2
+
+            # Couche 2 : Conv2d(32 filtres -> 64 filtres) + ReLU + MaxPool
             nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.ReLU(),  # Non-linéarité : sans elle, la pile de convolutions serait équivalente à UNE seule convolution
+            nn.MaxPool2d(kernel_size=2, stride=2),  # 16x16 -> 8x8. La taille spatiale est divisée par 4 au total
         )
+
+        # ----- Bloc classificateur (fully-connected) -----
+        # Après les convolutions/pooling, on aplatit les feature maps 2D en un vecteur 1D
+        # La dimension d'entrée est 64 (canaux) * 8 (hauteur) * 8 (largeur) = 4096
         self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(64 * 8 * 8, 128),
-            nn.ReLU(),
-            nn.Linear(128, num_classes),
+            nn.Flatten(),  # Aplatit (batch, 64, 8, 8) -> (batch, 4096). Garde la dimension du batch
+            nn.Linear(64 * 8 * 8, 128),  # Couche fully-connected : 4096 entrées -> 128 neurones cachés
+            nn.ReLU(),  # Activation ReLU sur les neurones cachés
+            nn.Linear(128, num_classes),  # Couche de sortie : 128 -> 10 logits (pas de softmax ici !)
         )
+        # NOTE : CrossEntropyLoss applique log-softmax + NLL en interne.
+        # Si on ajoutait un softmax manuel ici, la perte serait calculée deux fois -> erronée.
 
     def forward(self, x):
-        x = self.features(x)
-        x = self.classifier(x)
-        return x
+        """Passage avant (forward pass) : définit comment les données traversent le réseau."""
+        # Étape 1 : extraction des caractéristiques visuelles par convolutions
+        x = self.features(x)  # x passe de (B, 3, 32, 32) à (B, 64, 8, 8)
+        # Étape 2 : classification par couches fully-connected
+        x = self.classifier(x)  # x passe de (B, 4096) à (B, num_classes)
+        return x  # Retourne les logits bruts (pas de softmax)
 
-# Test
-model = SimpleCNN(num_classes=10)
-dummy_input = torch.randn(1, 3, 32, 32)
-output = model(dummy_input)
-print(f"Forme de la sortie : {output.shape}")  # torch.Size([1, 10])
-print(f"Nombre de paramètres : {sum(p.numel() for p in model.parameters()):,}")
+# ----- Test de l'architecture -----
+model = SimpleCNN(num_classes=10)  # Création d'une instance du CNN pour 10 classes
+dummy_input = torch.randn(1, 3, 32, 32)  # Batch de 1 image : 3 canaux RGB, 32x32 pixels
+output = model(dummy_input)  # Inférence : les logits sont calculés pour chaque classe
+print(f"Forme de la sortie : {output.shape}")  # torch.Size([1, 10]) -> 1 image, 10 scores de classe
+print(f"Nombre de paramètres : {sum(p.numel() for p in model.parameters()):,}")  # Ex: 1,123,786 paramètres
 ```
 
 **Explication détaillée architecture par architecture**
@@ -314,44 +335,57 @@ print(f"Nombre de paramètres : {sum(p.numel() for p in model.parameters()):,}")
 ### 6.2 Utiliser Faster R-CNN pré-entraîné
 
 ```python
-import torch
-import torchvision
+import torch  # Tenseurs et réseaux de neurones
+import torchvision  # Modèles de vision pré-entraînés (dont Faster R-CNN)
 from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2, FasterRCNN_ResNet50_FPN_V2_Weights
 
-# Chargement du modèle pré-entraîné sur COCO
-weights = FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT
-model = fasterrcnn_resnet50_fpn_v2(weights=weights, box_score_thresh=0.5)
-model.eval()  # Mode évaluation (pas de dropout, etc.)
+# ----- Étape 1 : Chargement du modèle pré-entraîné sur COCO (80 classes) -----
+# fasterrcnn_resnet50_fpn_v2 = Faster R-CNN avec backbone ResNet-50 + FPN
+# FPN (Feature Pyramid Network) = pyramide de features multi-échelles pour mieux détecter
+# les objets de différentes tailles (petits, moyens, grands)
+weights = FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT  # Poids pré-entraînés sur COCO
+model = fasterrcnn_resnet50_fpn_v2(weights=weights, box_score_thresh=0.5)  # Seuil de confiance : 0.5
+model.eval()  # Mode évaluation : désactive dropout et batch norm en mode training
 
-# Image synthétique de test
+# ----- Étape 2 : Création d'une image synthétique de test -----
+# Deux formes géométriques simples pour voir si le modèle les détecte
 import numpy as np
 import cv2
 
-img = np.zeros((300, 400, 3), dtype=np.uint8)
-cv2.rectangle(img, (50, 40), (200, 180), (255, 255, 255), -1)
-cv2.circle(img, (300, 150), 50, (200, 200, 0), -1)
+img = np.zeros((300, 400, 3), dtype=np.uint8)  # Image BGR noire 300x400
+cv2.rectangle(img, (50, 40), (200, 180), (255, 255, 255), -1)  # Rectangle blanc
+cv2.circle(img, (300, 150), 50, (200, 200, 0), -1)  # Cercle orange
 
-# Conversion en tenseur (C, H, W) normalisé [0, 1]
+# ----- Étape 3 : Conversion OpenCV -> PyTorch -----
+# OpenCV stocke en (H, W, C) au format BGR uint8 [0, 255]
+# PyTorch attend (C, H, W) au format RGB float32 [0, 1]
+# permute(2, 0, 1) : réorganise les dimensions (H, W, C) -> (C, H, W)
 img_tensor = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+# / 255.0 : normalisation de [0, 255] à [0, 1] (attendu par les modèles torchvision)
 
-# Inférence
+# ----- Étape 4 : Inférence -----
+# torch.no_grad() : désactive le calcul des gradients (inutile en inférence)
+# Sans no_grad(), PyTorch construirait le graphe de calcul -> mémoire * 2, temps * 2
 with torch.no_grad():
-    predictions = model([img_tensor])
+    predictions = model([img_tensor])  # Le modèle attend une LISTE de tenseurs (batch d'images)
 
-# Affichage des résultats
-pred = predictions[0]
-print(f"Boîtes détectées : {len(pred['boxes'])}")
-print(f"Classes : {pred['labels']}")
-print(f"Scores : {pred['scores']}")
+# ----- Étape 5 : Affichage des résultats -----
+pred = predictions[0]  # Résultats pour la première (et unique) image du batch
+print(f"Boîtes détectées : {len(pred['boxes'])}")  # Nombre d'objets détectés
+print(f"Classes : {pred['labels']}")  # Indices des classes COCO (ex: 16 = dog, 1 = person)
+print(f"Scores : {pred['scores']}")  # Scores de confiance entre 0 et 1
 
-# COCO class names (extraits)
+# ----- Étape 6 : Traduction des indices de classe en noms lisibles -----
+# COCO contient 80 classes. Voici quelques-unes des plus courantes.
+# La liste complète est disponible dans torchvision ou sur cocodataset.org
 COCO_CLASSES = {
     1: "person", 2: "bicycle", 3: "car", 5: "bus", 7: "truck",
     16: "dog", 17: "horse", 18: "sheep", 19: "cow", 44: "bottle",
     62: "tv", 63: "laptop", 64: "mouse", 72: "teddy bear",
 }
 for box, label, score in zip(pred["boxes"], pred["labels"], pred["scores"]):
-    name = COCO_CLASSES.get(int(label), f"class_{int(label)}")
+    name = COCO_CLASSES.get(int(label), f"class_{int(label)}")  # Traduction label -> nom
+    # Affichage : nom de l'objet, score de confiance, coordonnées de la boîte (x1, y1, x2, y2)
     print(f"  {name}: score={score:.3f}, box=({box[0]:.0f}, {box[1]:.0f}, {box[2]:.0f}, {box[3]:.0f})")
 ```
 
@@ -366,51 +400,83 @@ for box, label, score in zip(pred["boxes"], pred["labels"], pred["scores"]):
 ### 6.3 Calcul de métriques de détection
 
 ```python
-import torch
+import torch  # (utilisé implicitement pour les conversions, mais la fonction est purement NumPy)
 
 def compute_detection_metrics(pred_boxes, pred_labels, pred_scores,
                               gt_boxes, gt_labels, iou_threshold=0.5):
-    """Calcule TP, FP, FN, précision et rappel."""
-    tp = 0
-    fp = 0
-    fn = 0
-    matched_gt = set()
+    """
+    Calcule les métriques de détection : TP, FP, FN, Précision, Rappel.
 
+    Principe de l'évaluation (matching greedy) :
+      1. Chaque prédiction est comparée à TOUTES les GT non encore matchées.
+      2. Si IoU >= seuil ET même classe -> Vrai Positif (TP), la GT est marquée.
+      3. Si IoU < seuil ou classe différente -> Faux Positif (FP).
+      4. Les GT non matchées à la fin sont des Faux Négatifs (FN).
+
+    Paramètres
+    ----------
+    pred_boxes : list de [x1,y1,x2,y2]  -> boîtes prédites par le modèle
+    pred_labels : list de int            -> classes prédites
+    pred_scores : list de float          -> scores de confiance
+    gt_boxes : list de [x1,y1,x2,y2]    -> boîtes vérité terrain
+    gt_labels : list de int              -> classes réelles
+    iou_threshold : float                -> seuil IoU pour considérer un TP (0.5 par défaut)
+    """
+    tp = 0  # Vrais positifs : détections correctes (IoU >= seuil et bonne classe)
+    fp = 0  # Faux positifs : détections incorrectes (IoU < seuil ou mauvaise classe)
+    fn = 0  # Faux négatifs : objets GT non détectés
+    matched_gt = set()  # Indices des GT déjà associées à une prédiction (1 GT = 1 TP max)
+
+    # Boucle sur chaque prédiction
     for pred_box, pred_label, pred_score in zip(pred_boxes, pred_labels, pred_scores):
-        best_iou = 0
-        best_gt_idx = -1
-        for gt_idx, (gt_box, gt_label) in enumerate(zip(gt_boxes, gt_labels)):
-            if gt_idx in matched_gt:
-                continue
-            # Calcul IoU
-            x_left = max(pred_box[0], gt_box[0])
-            y_top = max(pred_box[1], gt_box[1])
-            x_right = min(pred_box[2], gt_box[2])
-            y_bottom = min(pred_box[3], gt_box[3])
-            if x_right <= x_left or y_bottom <= y_top:
-                continue
-            inter = (x_right - x_left) * (y_bottom - y_top)
-            pred_area = (pred_box[2] - pred_box[0]) * (pred_box[3] - pred_box[1])
-            gt_area = (gt_box[2] - gt_box[0]) * (gt_box[3] - gt_box[1])
-            union = pred_area + gt_area - inter
-            iou = inter / union if union > 0 else 0
-            if iou > best_iou and pred_label == gt_label:
-                best_iou = iou
-                best_gt_idx = gt_idx
-        if best_iou >= iou_threshold:
-            tp += 1
-            matched_gt.add(best_gt_idx)
-        else:
-            fp += 1
+        best_iou = 0  # Meilleur IoU trouvé pour cette prédiction
+        best_gt_idx = -1  # Indice de la GT correspondante
 
+        # Recherche de la meilleure GT non encore matchée
+        for gt_idx, (gt_box, gt_label) in enumerate(zip(gt_boxes, gt_labels)):
+            if gt_idx in matched_gt:  # GT déjà associée à une prédiction précédente
+                continue
+
+            # ----- Calcul de l'IoU entre pred_box et gt_box -----
+            x_left = max(pred_box[0], gt_box[0])  # Bord gauche de l'intersection
+            y_top = max(pred_box[1], gt_box[1])   # Bord haut de l'intersection
+            x_right = min(pred_box[2], gt_box[2]) # Bord droit de l'intersection
+            y_bottom = min(pred_box[3], gt_box[3]) # Bord bas de l'intersection
+
+            if x_right <= x_left or y_bottom <= y_top:  # Pas d'intersection
+                continue
+
+            inter = (x_right - x_left) * (y_bottom - y_top)  # Aire de l'intersection
+            pred_area = (pred_box[2] - pred_box[0]) * (pred_box[3] - pred_box[1])  # Aire de la prédiction
+            gt_area = (gt_box[2] - gt_box[0]) * (gt_box[3] - gt_box[1])  # Aire de la GT
+            union = pred_area + gt_area - inter  # Union = somme - intersection
+            iou = inter / union if union > 0 else 0  # IoU = inter / union
+
+            # On garde le meilleur IoU si la classe correspond
+            if iou > best_iou and pred_label == gt_label:
+                best_iou = iou      # Meilleur IoU trouvé
+                best_gt_idx = gt_idx  # Indice de la GT correspondante
+
+        # Décision : TP ou FP ?
+        if best_iou >= iou_threshold:  # IoU suffisamment élevé et bonne classe ?
+            tp += 1  # Vrai positif : la détection est correcte
+            matched_gt.add(best_gt_idx)  # Marquer la GT comme déjà matchée
+        else:
+            fp += 1  # Faux positif : détection incorrecte (mauvaise localisation ou mauvaise classe)
+
+    # Les GT qui n'ont été matchées à AUCUNE prédiction sont des faux négatifs
     fn = len(gt_boxes) - len(matched_gt)
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+
+    # Calcul de la précision et du rappel
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0  # "Quand je détecte, est-ce que j'ai raison ?"
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0     # "Est-ce que je trouve tous les objets ?"
+
     return {"tp": tp, "fp": fp, "fn": fn, "precision": precision, "recall": recall}
 
-# Test avec des boîtes fictives
-pred_boxes = [[50, 40, 200, 180]]
-gt_boxes = [[45, 35, 205, 185]]
+# ----- Test avec des boîtes fictives -----
+pred_boxes = [[50, 40, 200, 180]]  # Une seule prédiction : boîte autour de (50,40)-(200,180)
+gt_boxes = [[45, 35, 205, 185]]    # Une seule GT : boîte légèrement plus grande et décalée
+# Les deux boîtes se chevauchent fortement => IoU élevé => TP attendu
 metrics = compute_detection_metrics(pred_boxes, [1], [0.9], gt_boxes, [1])
 print(f"TP={metrics['tp']}, FP={metrics['fp']}, FN={metrics['fn']}")
 print(f"Précision={metrics['precision']:.2f}, Rappel={metrics['recall']:.2f}")
@@ -809,42 +875,50 @@ Si le script s'exécute sans erreur et que `metrics.json` est généré, le lab 
 Cet exercice trace la courbe précision-rappel en variant le seuil de score de Faster R-CNN.
 
 ```python
-import torch
-import numpy as np
+import torch  # Tenseurs et modèles PyTorch
+import numpy as np  # Calculs numériques
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use("Agg")  # Backend non interactif (pas d'écran)
 import matplotlib.pyplot as plt
 from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2, FasterRCNN_ResNet50_FPN_V2_Weights
 
+# Chargement du modèle Faster R-CNN pré-entraîné
 model = fasterrcnn_resnet50_fpn_v2(weights=FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT)
-model.eval()
+model.eval()  # Mode évaluation
 
-img = np.zeros((400, 500, 3), dtype=np.uint8)
+# Création d'une image de test synthétique (2 objets)
+img = np.zeros((400, 500, 3), dtype=np.uint8)  # Image noire 400x500
 import cv2
-cv2.rectangle(img, (50, 60), (200, 220), (255, 255, 255), -1)
+cv2.rectangle(img, (50, 60), (200, 220), (255, 255, 255), -1)  # Rectangle blanc
+
+# Conversion de l'image OpenCV -> tenseur PyTorch
 img_tensor = torch.from_numpy(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)).permute(2, 0, 1).float() / 255.0
 
-thresholds = np.arange(0.1, 0.95, 0.05)
-precisions = []
-recalls = []
+# Définition des seuils de score à tester (de 0.1 à 0.9 par pas de 0.05)
+thresholds = np.arange(0.1, 0.95, 0.05)  # [0.1, 0.15, 0.2, ..., 0.9]
+precisions = []  # Précision pour chaque seuil
+recalls = []     # Rappel pour chaque seuil
 
+# Inférence unique (les prédictions sont les mêmes, seul le seuil change)
 with torch.no_grad():
-    pred = model([img_tensor])[0]
+    pred = model([img_tensor])[0]  # Détections : boxes, labels, scores
 
-boxes = pred["boxes"].cpu().numpy()
-scores = pred["scores"].cpu().numpy()
-num_gt = 2  # 2 objets dans l'image
+boxes = pred["boxes"].cpu().numpy()  # Conversion en NumPy
+scores = pred["scores"].cpu().numpy()  # Scores de confiance
+num_gt = 2  # L'image contient 2 objets (approximation pédagogique)
 
+# Pour chaque seuil, on compte TP et FP en fonction du nombre de détections conservées
 for thresh in thresholds:
-    mask = scores >= thresh
-    tp = min(mask.sum(), num_gt)  # Approximation
-    fp = mask.sum() - tp
-    fn = num_gt - tp
-    p = tp / (tp + fp) if (tp + fp) > 0 else 1.0
-    r = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    mask = scores >= thresh  # Masque : True si le score dépasse le seuil, False sinon
+    tp = min(mask.sum(), num_gt)  # TP = nombre de détections conservées (plafonné à num_gt)
+    fp = mask.sum() - tp  # FP = détections supplémentaires au-delà des GT
+    fn = num_gt - tp  # FN = objets GT non détectés
+    p = tp / (tp + fp) if (tp + fp) > 0 else 1.0  # Précision
+    r = tp / (tp + fn) if (tp + fn) > 0 else 0.0  # Rappel
     precisions.append(p)
     recalls.append(r)
 
+# Tracé de la courbe précision-rappel
 plt.figure(figsize=(8, 4))
 plt.plot(recalls, precisions, marker="o", linewidth=2, color="steelblue")
 plt.title("Courbe Précision-Rappel (Faster R-CNN)")
@@ -854,6 +928,8 @@ plt.grid(True, alpha=0.3)
 plt.savefig("outputs/jour2/figures/precision_recall.png", dpi=130)
 plt.close()
 print("Courbe sauvegardée : outputs/jour2/figures/precision_recall.png")
+# Interprétation : un seuil bas donne un rappel élevé mais une précision faible
+# Un seuil haut donne une précision élevée mais un rappel faible
 ```
 
 **Attendu** : la courbe montre le compromis classique : un seuil bas donne un rappel élevé mais une précision faible, et inversement.
@@ -861,64 +937,79 @@ print("Courbe sauvegardée : outputs/jour2/figures/precision_recall.png")
 ### 7.11 Exercice bonus — Visualisation des feature maps
 
 ```python
-import torch
-import torch.nn as nn
-import numpy as np
-import cv2
+import torch  # Tenseurs et réseaux de neurones
+import torch.nn as nn  # Couches (Conv2d, ReLU, MaxPool2d)
+import numpy as np  # NumPy
+import cv2  # OpenCV pour la création d'images
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use("Agg")  # Backend non interactif
 import matplotlib.pyplot as plt
 
-# CNN avec hook pour capturer les feature maps
+# ----- CNN simplifié pour visualiser les feature maps -----
+# Contrairement au CNN du lab, on définit les couches SÉPARÉMENT (pas dans Sequential)
+# afin de pouvoir attacher un HOOK sur conv1 pour capturer ses activations
 class FeatureCNN(nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
-        self.relu1 = nn.ReLU()
-        self.pool1 = nn.MaxPool2d(2)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)  # 3 canaux RGB -> 32 filtres
+        self.relu1 = nn.ReLU()  # Activation ReLU (supprime les valeurs négatives)
+        self.pool1 = nn.MaxPool2d(2)  # MaxPooling : réduit la taille spatiale par 2
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)  # 32 -> 64 filtres
         self.relu2 = nn.ReLU()
         self.pool2 = nn.MaxPool2d(2)
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.relu1(x)
-        x = self.pool1(x)
-        x = self.conv2(x)
+        x = self.conv1(x)   # (B, 3, 64, 64) -> (B, 32, 64, 64) : 32 feature maps
+        x = self.relu1(x)   # Non-linéarité : max(0, x)
+        x = self.pool1(x)   # (B, 32, 64, 64) -> (B, 32, 32, 32)
+        x = self.conv2(x)   # (B, 32, 32, 32) -> (B, 64, 32, 32)
         x = self.relu2(x)
-        x = self.pool2(x)
+        x = self.pool2(x)   # (B, 64, 32, 32) -> (B, 64, 16, 16)
         return x
 
 model = FeatureCNN()
-model.eval()
+model.eval()  # Mode évaluation
 
-# Image de test
-img = np.zeros((64, 64, 3), dtype=np.uint8)
-cv2.rectangle(img, (10, 10), (50, 50), (255, 255, 255), -1)
+# ----- Création d'une image de test -----
+# Un simple rectangle blanc sur fond noir pour voir comment les filtres réagissent
+img = np.zeros((64, 64, 3), dtype=np.uint8)  # Image BGR noire 64x64
+cv2.rectangle(img, (10, 10), (50, 50), (255, 255, 255), -1)  # Rectangle blanc
+# Conversion en tenseur : (H, W, C) -> (C, H, W) -> ajout dimension batch -> normalisation [0,1]
 img_tensor = torch.from_numpy(img).permute(2, 0, 1).float().unsqueeze(0) / 255.0
 
-# Capture des feature maps après conv1
-activations = {}
+# ----- Hook pour capturer les activations de conv1 -----
+# Un hook est une fonction appelée AUTOMATIQUEMENT après le forward d'une couche
+# Cela nous permet de "voir" ce qui se passe à l'intérieur du réseau
+activations = {}  # Dictionnaire pour stocker les activations capturées
 def hook_fn(module, input, output):
-    activations["conv1"] = output.detach()
+    # module = la couche (conv1), input = entrée de conv1, output = sortie de conv1
+    activations["conv1"] = output.detach()  # .detach() = détache du graphe de calcul
 
+# Enregistrement du hook sur la première couche convolutive
 model.conv1.register_forward_hook(hook_fn)
 with torch.no_grad():
-    _ = model(img_tensor)
+    _ = model(img_tensor)  # Forward pass : le hook stocke automatiquement les activations
 
-# Visualiser les 8 premières feature maps
-maps = activations["conv1"][0][:8]
-fig, axes = plt.subplots(2, 4, figsize=(10, 5))
+# ----- Visualisation des 8 premières feature maps -----
+# activations["conv1"] a la forme (1, 32, 64, 64) : batch=1, 32 filtres, 64x64
+maps = activations["conv1"][0][:8]  # Première image du batch, filtres 0 à 7
+
+fig, axes = plt.subplots(2, 4, figsize=(10, 5))  # Grille 2x4 pour 8 filtres
 for i, ax in enumerate(axes.flat):
-    if i < maps.shape[0]:
-        ax.imshow(maps[i].numpy(), cmap="viridis")
-        ax.set_title(f"Filtre {i}")
-        ax.axis("off")
-plt.suptitle("Feature maps — Couche Conv1")
+    if i < maps.shape[0]:  # Pour chaque filtre (0 à 7)
+        # Chaque feature map montre où le filtre i s'active dans l'image
+        # Les zones claires (jaunes/violettes) indiquent une forte activation
+        ax.imshow(maps[i].numpy(), cmap="viridis")  # Carte d'activation en fausses couleurs
+        ax.set_title(f"Filtre {i}")  # Numéro du filtre
+        ax.axis("off")  # Pas d'axes
+plt.suptitle("Feature maps — Couche Conv1")  # Titre général
 plt.tight_layout()
 plt.savefig("outputs/jour2/figures/feature_maps.png", dpi=130)
 plt.close()
 print("Feature maps sauvegardées : outputs/jour2/figures/feature_maps.png")
+# Certains filtres détectent les bords horizontaux, d'autres les verticaux,
+# d'autres ne réagissent pas du tout (filtres "morts").
+# C'est exactement comme HOG/SIFT, mais appris automatiquement !
 ```
 
 **Attendu** : les feature maps montrent comment chaque filtre répond différemment aux bords du rectangle. Certains filtres activent sur les bords horizontaux, d'autres sur les verticaux.

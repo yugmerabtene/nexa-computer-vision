@@ -162,15 +162,17 @@ Cette section couvre le premier bloc du syllabus : lecture, redimensionnement, h
 OpenCV lit les images sous forme de tableaux NumPy. L'ordre des canaux est BGR (et non RGB).
 
 ```python
-import cv2
+import cv2  # OpenCV : bibliothèque de référence pour le traitement d'images
 
 # Lecture d'une image depuis un fichier
+# ATTENTION : cv2.imread ne lève PAS d'exception si le fichier n'existe pas
+# Elle retourne None silencieusement. Toujours vérifier le résultat.
 img = cv2.imread("image.jpg")
 
-# Informations de base
-print("Type :", type(img))         # numpy.ndarray
-print("Forme :", img.shape)        # (hauteur, largeur, canaux)
-print("Type de données :", img.dtype)  # uint8
+# Informations de base sur l'image chargée
+print("Type :", type(img))         # numpy.ndarray -> OpenCV stocke les images comme des tableaux NumPy
+print("Forme :", img.shape)        # (hauteur, largeur, canaux) -> ex: (480, 640, 3)
+print("Type de données :", img.dtype)  # uint8 -> entiers non signés 8 bits, plage [0, 255]
 ```
 
 **Explication détaillée**
@@ -182,8 +184,10 @@ print("Type de données :", img.dtype)  # uint8
 
 ```python
 # Conversion BGR -> niveaux de gris
+# La formule utilisée par OpenCV est : Gris = 0.299*R + 0.587*V + 0.114*B
+# Ces poids correspondent à la sensibilité de l'oeil humain (le vert domine)
 gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-print("Forme niveaux de gris :", gris.shape)  # (hauteur, largeur)
+print("Forme niveaux de gris :", gris.shape)  # (hauteur, largeur) -> plus que 2 dimensions, le canal couleur a disparu
 ```
 
 **Explication détaillée**
@@ -195,10 +199,14 @@ print("Forme niveaux de gris :", gris.shape)  # (hauteur, largeur)
 ### 6.3 Redimensionnement
 
 ```python
-# Redimensionnement à une taille fixe
+# Redimensionnement à une taille fixe (128 pixels de large, 64 pixels de haut)
+# ATTENTION : l'ordre est (largeur, hauteur) et NON pas (hauteur, largeur) comme dans NumPy !
+# INTER_AREA est recommandé pour la réduction (évite le crénelage/aliasing)
 redimensionnee = cv2.resize(img, (128, 64), interpolation=cv2.INTER_AREA)
 
-# Redimensionnement par facteur (x2)
+# Redimensionnement par facteur d'échelle (x2 en largeur ET en hauteur)
+# Quand on passe fx/fy, le deuxième argument doit être None
+# INTER_CUBIC est recommandé pour l'agrandissement (plus fluide, utilise un voisinage 4x4)
 x2 = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
 ```
 
@@ -225,23 +233,26 @@ Sur une vraie image, l'histogramme révèle immédiatement si l'information est 
 - **Message à retenir** : l'histogramme aide à choisir un prétraitement adapté, par exemple égalisation, seuillage ou normalisation.
 
 ```python
-import cv2
-import numpy as np
+import cv2  # Traitement d'images
+import numpy as np  # Manipulation de tableaux numériques
 import matplotlib
-matplotlib.use("Agg")  # Mode sans affichage (serveur, SSH)
-import matplotlib.pyplot as plt
+matplotlib.use("Agg")  # ESSENTIEL : backend non interactif pour serveur/SSH
+                      # Sans ceci, plt.show() planterait avec "No display available"
+import matplotlib.pyplot as plt  # Pour tracer les graphiques
 
-# Image de test : générer ou utiliser labs/jour1/assets/test_scene.png
-img = np.zeros((200, 300, 3), dtype=np.uint8)
-cv2.rectangle(img, (50, 40), (250, 160), (255, 255, 255), -1)
-gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+# Image de test : soit on charge une image réelle, soit on en génère une
+img = np.zeros((200, 300, 3), dtype=np.uint8)  # Image noire 200x300 en RGB
+cv2.rectangle(img, (50, 40), (250, 160), (255, 255, 255), -1)  # Rectangle blanc, -1 = rempli
+gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # Conversion en niveaux de gris
 
+# Calcul de l'histogramme : compte combien de pixels ont chaque intensité (0 à 255)
+# Paramètres : [image], [canal]=0, masque=None, [nb_bins]=256, [plage]=0-256
 histogramme = cv2.calcHist([gris], [0], None, [256], [0, 256])
-plt.plot(histogramme, color='black')
-plt.title("Histogramme des niveaux de gris")
-plt.xlabel("Intensite (0-255)")
-plt.ylabel("Nombre de pixels")
-plt.savefig("histogramme.png")  # Sauvegarde au lieu de plt.show()
+plt.plot(histogramme, color='black')  # Tracé de la courbe noire
+plt.title("Histogramme des niveaux de gris")  # Titre du graphique
+plt.xlabel("Intensite (0-255)")  # Axe X : valeur du pixel
+plt.ylabel("Nombre de pixels")  # Axe Y : fréquence d'apparition
+plt.savefig("histogramme.png")  # Sauvegarde en PNG (obligatoire avec backend Agg)
 ```
 
 **Explication détaillée**
@@ -267,20 +278,24 @@ L'égalisation redistribue les intensités pour améliorer le contraste d'une im
 - **Message à retenir** : améliorer le contraste peut aider la détection, mais ce n'est pas une opération neutre ; il faut vérifier son effet sur les données réelles.
 
 ```python
-import cv2
+import cv2  # OpenCV pour le traitement d'images
 
-# Chargement d'une image à faible contraste
-# img = cv2.imread("labs/jour1/assets/test_low_contrast.png")
-# gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+# Chargement d'une image à faible contraste (ex: tous les pixels entre 30 et 70)
+# img = cv2.imread("labs/jour1/assets/test_low_contrast.png")  # Image très sombre
+# gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # Conversion en niveaux de gris
 
-# Égalisation : étale l'histogramme sur toute la plage [0, 255]
+# Égalisation d'histogramme : redistribue les intensités sur TOUTE la plage [0, 255]
+# Utilise la CDF (Cumulative Distribution Function) pour étaler l'histogramme
+# Les détails invisibles dans les zones sombres deviennent visibles
 gris_equalise = cv2.equalizeHist(gris)
 
-# Comparaison : avant vs après
-cv2.imwrite("avant_equalisation.png", gris)
-cv2.imwrite("apres_equalisation.png", gris_equalise)
-print("Histogramme avant : min =", gris.min(), "max =", gris.max())
-print("Histogramme après : min =", gris_equalise.min(), "max =", gris_equalise.max())
+# Sauvegarde des deux versions pour comparaison visuelle
+cv2.imwrite("avant_equalisation.png", gris)  # Image originale, faible contraste
+cv2.imwrite("apres_equalisation.png", gris_equalise)  # Image égalisée, contraste amélioré
+
+# Affichage des stats pour vérifier l'étalement de l'histogramme
+print("Histogramme avant : min =", gris.min(), "max =", gris.max())  # Ex: min=30, max=70
+print("Histogramme après : min =", gris_equalise.min(), "max =", gris_equalise.max())  # Ex: min=0, max=255
 ```
 
 **Explication détaillée**
@@ -304,16 +319,21 @@ Sur une image réelle, le choix du seuil influence fortement le résultat. Un se
 - **Message à retenir** : aucun seuil n'est universel. Il faut choisir la méthode selon la distribution des intensités et les variations locales de l'image.
 
 ```python
-# Seuillage binaire simple
+# Seuillage binaire simple (seuil GLOBAL fixe à 127)
+# _ = valeur du seuil effectivement utilisée (utile pour Otsu)
+# binaire = image où pixels > 127 deviennent blanc (255), les autres noirs (0)
 _, binaire = cv2.threshold(gris, 127, 255, cv2.THRESH_BINARY)
 
-# Seuillage inverse
+# Seuillage inverse : pixels > 127 deviennent noir (0), les autres blanc (255)
 _, binaire_inv = cv2.threshold(gris, 127, 255, cv2.THRESH_BINARY_INV)
 
-# Seuil adaptatif (varie localement)
+# Seuil adaptatif : CALCULE UN SEUIL DIFFÉRENT pour chaque pixel
+# basé sur la moyenne pondérée de ses voisins (fenêtre 11x11 pixels)
+# Avantage : fonctionne même si l'éclairage varie dans l'image
+# Paramètres : entrée, valeur_max, méthode (GAUSSIAN_C ou MEAN_C), type, TAILLE_BLOC, constante
 adaptatif = cv2.adaptiveThreshold(
-    gris, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-    cv2.THRESH_BINARY, 11, 2
+    gris, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,  # Gaussienne = pondération par distance
+    cv2.THRESH_BINARY, 11, 2  # 11 = taille du voisinage (doit être impaire), 2 = constante soustraite
 )
 ```
 
@@ -338,26 +358,32 @@ Après le seuillage, l'étape naturelle est d'extraire les contours pour isoler 
 - **Message à retenir** : les contours introduisent la localisation ; Faster R-CNN et YOLO généraliseront cette idée avec des modèles capables de classer et scorer les objets.
 
 ```python
-import cv2
-import numpy as np
+import cv2  # OpenCV
+import numpy as np  # NumPy pour les tableaux
 
-# Image binaire après seuillage
-img = np.zeros((200, 300, 3), dtype=np.uint8)
-cv2.rectangle(img, (50, 40), (250, 160), (255, 255, 255), -1)
-gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-_, binaire = cv2.threshold(gris, 127, 255, cv2.THRESH_BINARY)
+# Étape 1 : créer une image de test avec un rectangle blanc sur fond noir
+img = np.zeros((200, 300, 3), dtype=np.uint8)  # Image BGR noire
+cv2.rectangle(img, (50, 40), (250, 160), (255, 255, 255), -1)  # Rectangle blanc rempli
 
-# Détection des contours
+# Étape 2 : conversion en niveaux de gris + seuillage binaire
+gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # Un seul canal d'intensité
+_, binaire = cv2.threshold(gris, 127, 255, cv2.THRESH_BINARY)  # Objet blanc, fond noir
+
+# Étape 3 : détection des contours dans l'image binaire
+# RETR_EXTERNAL = seulement les contours les plus externes (pas les trous internes)
+# CHAIN_APPROX_SIMPLE = compression des segments pour économiser la mémoire
 contours, hierarchy = cv2.findContours(binaire, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-print(f"Nombre d'objets détectés : {len(contours)}")
+print(f"Nombre d'objets détectés : {len(contours)}")  # Normalement 1 pour notre rectangle
 
-# Extraction de la boîte englobante pour chaque contour
+# Étape 4 : pour chaque contour, extraire sa boîte englobante minimale
+# cv2.boundingRect retourne (x, y, largeur, hauteur) du rectangle non rotatif
 for i, contour in enumerate(contours):
-    x, y, w, h = cv2.boundingRect(contour)
+    x, y, w, h = cv2.boundingRect(contour)  # x,y = coin haut-gauche, w = largeur, h = hauteur
     print(f"Objet {i} : x={x}, y={y}, largeur={w}, hauteur={h}")
-    # Dessiner la boîte sur l'image originale
+    # Dessiner la boîte en VERT (0,255,0) avec une épaisseur de 2 pixels
     cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
+# Sauvegarde du résultat final
 cv2.imwrite("contours_detectes.png", img)
 ```
 
@@ -377,31 +403,39 @@ cv2.imwrite("contours_detectes.png", img)
 
 ```python
 # Script : openCV_bases.py
-# Démontrer lecture, conversion, resize, histogramme, seuillage
+# Démontrer le pipeline complet : création -> conversion -> resize -> histogramme -> seuillage -> localisation
 
-import cv2
-import numpy as np
+import cv2  # OpenCV pour le traitement d'images
+import numpy as np  # NumPy pour la manipulation des tableaux
 
-# 1) Création d'une image synthétique (rectangle blanc sur fond noir)
-img = np.zeros((200, 300, 3), dtype=np.uint8)
-cv2.rectangle(img, (50, 40), (250, 160), (255, 255, 255), -1)
+# ----- Étape 1 : Création d'une scène synthétique -----
+# On fabrique une image avec un rectangle blanc sur fond noir
+# Cela simule un cas idéal où l'objet est parfaitement contrasté
+img = np.zeros((200, 300, 3), dtype=np.uint8)  # Fond noir, 200x300 pixels, 3 canaux BGR
+cv2.rectangle(img, (50, 40), (250, 160), (255, 255, 255), -1)  # Rectangle blanc, -1 = remplissage total
 
-# 2) Conversion en niveaux de gris
-gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+# ----- Étape 2 : Conversion en niveaux de gris -----
+# On passe de 3 canaux (BGR) à 1 seul canal d'intensité
+gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # Forme : (200, 300) au lieu de (200, 300, 3)
 
-# 3) Redimensionnement
-petite = cv2.resize(gris, (64, 32), interpolation=cv2.INTER_AREA)
+# ----- Étape 3 : Redimensionnement -----
+# On réduit l'image pour accélérer les traitements suivants
+# INTER_AREA est le meilleur choix pour réduire la taille (moyenne des pixels voisins)
+petite = cv2.resize(gris, (64, 32), interpolation=cv2.INTER_AREA)  # 64 px de large, 32 px de haut
 
-# 4) Histogramme
+# ----- Étape 4 : Analyse par histogramme -----
+# On compte le nombre de pixels pour chaque intensité (0 à 255)
+# hist[0][0] = nombre de pixels noirs (fond), hist[255][0] = nombre de pixels blancs (objet)
 hist = cv2.calcHist([gris], [0], None, [256], [0, 256])
-print(f"Pixels noirs (valeur 0) : {int(hist[0][0])}")
-print(f"Pixels blancs (valeur 255) : {int(hist[255][0])}")
+print(f"Pixels noirs (valeur 0) : {int(hist[0][0])}")  # Fond : pixels à 0
+print(f"Pixels blancs (valeur 255) : {int(hist[255][0])}")  # Objet : pixels à 255
 
-# 5) Seuillage binaire
-_, binaire = cv2.threshold(gris, 127, 255, cv2.THRESH_BINARY)
-points = cv2.findNonZero(binaire)
-x, y, w, h = cv2.boundingRect(points)
-print(f"Boîte détectée : x={x}, y={y}, w={w}, h={h}")
+# ----- Étape 5 : Seuillage et localisation -----
+# On sépare l'objet du fond par seuillage binaire
+_, binaire = cv2.threshold(gris, 127, 255, cv2.THRESH_BINARY)  # Pixel > 127 ? Blanc : Noir
+points = cv2.findNonZero(binaire)  # Récupère les coordonnées (x, y) de tous les pixels blancs
+x, y, w, h = cv2.boundingRect(points)  # Calcule le rectangle minimal contenant tous ces points
+print(f"Boîte détectée : x={x}, y={y}, w={w}, h={h}")  # Position et taille de "l'objet"
 ```
 
 **Explication détaillée du code pas à pas**
@@ -611,24 +645,37 @@ Ou $d_1$ est la distance au plus proche voisin et $d_2$ au second. Cela elimine 
 
 ```python
 def iou(box_a, box_b):
-    # Boîtes au format (x1, y1, x2, y2)
-    x_left = max(box_a[0], box_b[0])
-    y_top = max(box_a[1], box_b[1])
-    x_right = min(box_a[2], box_b[2])
-    y_bottom = min(box_a[3], box_b[3])
+    """
+    Calcule l'Intersection over Union entre deux boîtes.
+    Format attendu : (x1, y1, x2, y2) où (x1,y1) = coin haut-gauche, (x2,y2) = coin bas-droit
+    """
+    # --- Étape 1 : trouver le rectangle d'intersection ---
+    x_left = max(box_a[0], box_b[0])  # Le bord gauche de l'intersection = le plus à droite des deux bords gauches
+    y_top = max(box_a[1], box_b[1])   # Le bord haut de l'intersection = le plus bas des deux bords hauts
+    x_right = min(box_a[2], box_b[2]) # Le bord droit de l'intersection = le plus à gauche des deux bords droits
+    y_bottom = min(box_a[3], box_b[3]) # Le bord bas de l'intersection = le plus haut des deux bords bas
 
+    # --- Étape 2 : vérifier que l'intersection existe ---
+    # Si les coordonnées sont inversées (x_left > x_right), les boîtes ne se touchent PAS
     if x_right <= x_left or y_bottom <= y_top:
-        return 0.0  # Pas d'intersection
+        return 0.0  # Pas d'intersection => IoU = 0
 
-    inter = (x_right - x_left) * (y_bottom - y_top)
-    area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
-    area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
+    # --- Étape 3 : calculer l'aire de l'intersection ---
+    inter = (x_right - x_left) * (y_bottom - y_top)  # largeur * hauteur de la zone commune
+
+    # --- Étape 4 : calculer les aires individuelles ---
+    area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])  # largeur * hauteur de la boîte A
+    area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])  # largeur * hauteur de la boîte B
+
+    # --- Étape 5 : IoU = intersection / union ---
+    # Union = Aire(A) + Aire(B) - Aire(Intersection)
+    # On soustrait l'intersection pour ne pas la compter deux fois
     return inter / (area_a + area_b - inter)
 
-# Test
-box_gt = (40, 60, 180, 190)
-box_pred = (52, 60, 192, 190)
-print(f"IoU = {iou(box_pred, box_gt):.3f}")
+# Test avec deux boîtes qui se chevauchent partiellement
+box_gt = (40, 60, 180, 190)    # Boîte de référence (vérité terrain)
+box_pred = (52, 60, 192, 190)  # Boîte prédite (décalée de 12px vers la droite)
+print(f"IoU = {iou(box_pred, box_gt):.3f}")  # Résultat attendu ~0.84 pour un décalage de 12px
 ```
 
 **Explication détaillée pas à pas**
@@ -641,26 +688,38 @@ print(f"IoU = {iou(box_pred, box_gt):.3f}")
 ### 9.2 Extraction HOG
 
 ```python
-import cv2
+import cv2  # OpenCV (inclut HOGDescriptor)
 import numpy as np
 
-# Préparation : image synthétique rectangulaire
-img = np.zeros((200, 300, 3), dtype=np.uint8)
-cv2.rectangle(img, (50, 40), (250, 160), (255, 255, 255), -1)
-image_grise = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+# ----- Étape 1 : Création d'une image de test -----
+# Un rectangle blanc sur fond noir : forme simple avec des contours bien définis
+img = np.zeros((200, 300, 3), dtype=np.uint8)  # Image BGR noire 200x300
+cv2.rectangle(img, (50, 40), (250, 160), (255, 255, 255), -1)  # Rectangle blanc rempli
+image_grise = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # Conversion en niveaux de gris
 
-# Redimensionnement obligatoire (fenetre fixe)
+# ----- Étape 2 : Redimensionnement à la taille fixe de la fenêtre HOG -----
+# HOG travaille sur une fenêtre de taille FIXE. Sans resize, deux images de tailles
+# différentes produiraient des vecteurs de dimensions différentes => incomparables
+# INTER_AREA = meilleur choix pour la réduction (anti-crénelage)
 gris = cv2.resize(image_grise, (128, 64), interpolation=cv2.INTER_AREA)
 
+# ----- Étape 3 : Configuration du descripteur HOG -----
+# Paramètres classiques (Dalal & Triggs, 2005) :
+# - winSize=(128,64) : taille de la fenêtre de détection
+# - blockSize=(16,16) : un block = 4 cellules (2x2), normalisé
+# - blockStride=(8,8) : chevauchement des blocks
+# - cellSize=(8,8)    : une cellule = 8x8 pixels
+# - nbins=9           : 9 orientations (0°, 20°, 40°, ..., 160°)
+# Calcul de la dimension : 15 blocks H x 7 blocks V x 4 cellules/block x 9 bins = 3780
 hog = cv2.HOGDescriptor(
-    _winSize=(128, 64),
-    _blockSize=(16, 16),
-    _blockStride=(8, 8),
-    _cellSize=(8, 8),
-    _nbins=9,
+    _winSize=(128, 64),   # Fenêtre de détection : 128 px de large, 64 px de haut
+    _blockSize=(16, 16),  # Taille d'un block de normalisation
+    _blockStride=(8, 8),  # Pas de déplacement d'un block à l'autre
+    _cellSize=(8, 8),     # Taille d'une cellule de base
+    _nbins=9,             # Nombre d'orientations par cellule
 )
-descripteur = hog.compute(gris)
-print(f"Dimension du descripteur : {descripteur.shape[0]}")
+descripteur = hog.compute(gris)  # Retourne un vecteur colonne de forme (3780, 1)
+print(f"Dimension du descripteur : {descripteur.shape[0]}")  # Affiche : 3780
 ```
 
 **Explication détaillée**
@@ -676,35 +735,48 @@ print(f"Dimension du descripteur : {descripteur.shape[0]}")
 ### 9.3 Détection SIFT et matching
 
 ```python
-import cv2
+import cv2  # OpenCV (inclut SIFT_create, BFMatcher)
 import numpy as np
 
-# Préparation : deux images synthétiques similaires
-img1 = np.zeros((200, 300, 3), dtype=np.uint8)
-cv2.rectangle(img1, (50, 40), (250, 160), (255, 255, 255), -1)
-image_grise = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+# ----- Étape 1 : Création de la première image (référence) -----
+# Un rectangle blanc sur fond noir : forme géométrique simple
+img1 = np.zeros((200, 300, 3), dtype=np.uint8)  # Image BGR noire
+cv2.rectangle(img1, (50, 40), (250, 160), (255, 255, 255), -1)  # Rectangle blanc rempli
+image_grise = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)  # Conversion en niveaux de gris
 
-sift = cv2.SIFT_create()
-kp, desc = sift.detectAndCompute(image_grise, None)
-print(f"Nombre de points clés : {len(kp)}")
+# ----- Étape 2 : Détection des points clés SIFT sur l'image 1 -----
+# SIFT détecte les points d'intérêt (coins, blobs) invariants à l'échelle et à la rotation
+# Chaque point clé (kp) a : position (x,y), échelle, orientation
+# Chaque descripteur (desc) est un vecteur de 128 dimensions
+sift = cv2.SIFT_create()  # Création de l'objet SIFT (paramètres par défaut)
+kp, desc = sift.detectAndCompute(image_grise, None)  # detect = trouve les points, compute = calcule les desc
+print(f"Nombre de points clés : {len(kp)}")  # Peu de points sur une forme simple (manque de texture)
 
-# Seconde image (léger décalage) pour le matching
-img2 = np.zeros((200, 300, 3), dtype=np.uint8)
-cv2.rectangle(img2, (55, 42), (255, 162), (255, 255, 255), -1)
-gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
-kp2, desc2 = sift.detectAndCompute(gray2, None)
+# ----- Étape 3 : Création de la seconde image (léger décalage) -----
+# Même rectangle mais décalé de 5px en x et 2px en y, agrandi de 10px
+# Cela simule une transformation légère entre deux vues du même objet
+img2 = np.zeros((200, 300, 3), dtype=np.uint8)  # Même fond noir
+cv2.rectangle(img2, (55, 42), (255, 162), (255, 255, 255), -1)  # Rectangle légèrement décalé
+gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)  # Conversion en gris
+kp2, desc2 = sift.detectAndCompute(gray2, None)  # Points clés de l'image 2
 
-# Matching avec test de ratio de Lowe
-desc1 = desc
-bf = cv2.BFMatcher(cv2.NORM_L2)
-matches = bf.knnMatch(desc1, desc2, k=2)
+# ----- Étape 4 : Matching des descripteurs entre les deux images -----
+# BFMatcher = Brute-Force : compare chaque descripteur de desc1 avec TOUS ceux de desc2
+# NORM_L2 = distance euclidienne
+desc1 = desc  # Descripteurs de l'image de référence
+bf = cv2.BFMatcher(cv2.NORM_L2)  # Matcher par force brute, distance L2
+matches = bf.knnMatch(desc1, desc2, k=2)  # k=2 = les 2 meilleurs voisins pour le ratio test
 
+# ----- Étape 5 : Filtrage par le ratio test de Lowe -----
+# Principe : un match est fiable si le meilleur voisin est BEAUCOUP meilleur que le second
+# Si d1 / d2 < 0.75, le match est conservé ; sinon, il est trop ambigu et rejeté
+# Ce filtre élimine les faux matches (fausses correspondances)
 bons_matches = []
-for m, n in matches:
-    if m.distance < 0.75 * n.distance:
-        bons_matches.append(m)
+for m, n in matches:  # m = meilleur voisin, n = second meilleur voisin
+    if m.distance < 0.75 * n.distance:  # Ratio test de Lowe (0.75 = valeur recommandée)
+        bons_matches.append(m)  # Match fiable : on le garde
 
-print(f"Bons matches : {len(bons_matches)}")
+print(f"Bons matches : {len(bons_matches)}")  # Nombre de correspondances fiables
 ```
 
 **Explication détaillée**
@@ -836,30 +908,35 @@ Si le script s'exécute sans erreur et que `metrics.json` est généré, le lab 
 Cet exercice produit une visualisation de la relation entre le décalage et la qualité de localisation.
 
 ```python
-import json
-import numpy as np
+import json  # (réservé pour éventuelle sauvegarde)
+import numpy as np  # Calculs numériques
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use("Agg")  # Backend non interactif (pas d'écran)
 import matplotlib.pyplot as plt
 
+# Import des fonctions du lab Jour 1 (réutilisées ici)
 from labs.jour1.day1_lab import make_synthetic_scene, bbox_from_threshold, iou
 
-shifts = range(0, 60, 5)
-iou_scores = []
+# On fait varier le décalage (shift) de 0 à 55 pixels par pas de 5
+shifts = range(0, 60, 5)  # [0, 5, 10, 15, ..., 55]
+iou_scores = []  # Liste qui stockera l'IoU pour chaque décalage
 
+# Image de référence (GT) : rectangle sans décalage
 img_gt = make_synthetic_scene("rectangle", shift=0)
 gray_gt = bbox_from_threshold(__import__("cv2").cvtColor(img_gt, __import__("cv2").COLOR_BGR2GRAY))
 
+# Boucle de test : pour chaque décalage, on calcule l'IoU avec la GT
 for s in shifts:
-    img_pred = make_synthetic_scene("rectangle", shift=s)
-    gray_pred = __import__("cv2").cvtColor(img_pred, __import__("cv2").COLOR_BGR2GRAY)
-    box_pred = bbox_from_threshold(gray_pred)
-    box_gt = (40, 60, 181, 191)  # Reference fixe
-    iou_scores.append(iou(box_pred, box_gt))
+    img_pred = make_synthetic_scene("rectangle", shift=s)  # Rectangle décalé de s pixels
+    gray_pred = __import__("cv2").cvtColor(img_pred, __import__("cv2").COLOR_BGR2GRAY)  # Conversion en gris
+    box_pred = bbox_from_threshold(gray_pred)  # Extraction de la boîte prédite par seuillage
+    box_gt = (40, 60, 181, 191)  # Boîte GT fixe (rectangle non décalé, en x1,y1,x2,y2)
+    iou_scores.append(iou(box_pred, box_gt))  # Calcul et stockage de l'IoU
 
+# Tracé de la courbe : IoU en fonction du décalage
 plt.figure(figsize=(8, 4))
 plt.plot(shifts, iou_scores, marker="o", linewidth=2, color="steelblue")
-plt.axhline(0.7, color="red", linestyle="--", label="Seuil 0.7")
+plt.axhline(0.7, color="red", linestyle="--", label="Seuil 0.7")  # Seuil de référence
 plt.title("Impact du décalage sur l'IoU")
 plt.xlabel("Decalage (pixels)")
 plt.ylabel("IoU")
@@ -875,23 +952,26 @@ print("Courbe sauvegardée : outputs/jour1/figures/iou_vs_shift.png")
 ### 10.10 Exercice bonus — Détection de contours (Canny)
 
 ```python
-import cv2
+import cv2  # OpenCV (inclut Canny)
 import numpy as np
 
-# Chargement d'une image réelle ou synthétique
-img = np.zeros((300, 400, 3), dtype=np.uint8)
-cv2.rectangle(img, (30, 40), (180, 200), (255, 255, 255), -1)
-cv2.circle(img, (300, 150), 60, (255, 200, 0), -1)
+# Création d'une scène synthétique avec deux formes géométriques
+img = np.zeros((300, 400, 3), dtype=np.uint8)  # Image BGR noire 300x400
+cv2.rectangle(img, (30, 40), (180, 200), (255, 255, 255), -1)  # Grand rectangle blanc
+cv2.circle(img, (300, 150), 60, (255, 200, 0), -1)  # Cercle orange
 
-gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # Conversion en niveaux de gris
 
-# Détection de contours Canny
+# Détection de contours avec l'algorithme Canny
+# Paramètres : seuil bas = 100, seuil haut = 200
+# Les pixels avec un gradient > 200 sont considérés comme des contours forts
+# Les pixels avec un gradient entre 100 et 200 sont acceptés S'ILS sont connectés à un contour fort
 contours = cv2.Canny(gris, 100, 200)
-cv2.imwrite("outputs/jour1/figures/canny_edges.png", contours)
+cv2.imwrite("outputs/jour1/figures/canny_edges.png", contours)  # Image binaire des contours
 
-# Compter les pixels de contour
+# Comptage des pixels de contour (pixels blancs dans l'image binaire)
 n_contour_pixels = cv2.countNonZero(contours)
-print(f"Pixels de contour : {n_contour_pixels}")
+print(f"Pixels de contour : {n_contour_pixels}")  # Nombre total de pixels appartenant à un bord
 ```
 
 **Attendu** : Canny détecte les bords du rectangle et du cercle. Cette méthode est un prétraitement classique avant les approches CNN du Jour 2.

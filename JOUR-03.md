@@ -249,28 +249,38 @@ Le **mAP@0.5** signifie : mAP calculé avec un seuil d'IoU de 0.5.
 ### 6.1 Utiliser YOLOv8 (Ultralytics)
 
 ```python
-from ultralytics import YOLO
-import cv2
-import numpy as np
+from ultralytics import YOLO  # Bibliothèque officielle Ultralytics pour YOLOv8
+import cv2  # OpenCV pour la manipulation d'images
+import numpy as np  # NumPy pour les tableaux
 
-# Chargement du modèle pré-entraîné YOLOv8n (nano, le plus rapide)
-model = YOLO("yolov8n.pt")
+# ----- Étape 1 : Chargement du modèle YOLOv8 pré-entraîné -----
+# YOLO("yolov8n.pt") télécharge automatiquement les poids COCO (80 classes)
+# yolov8n = version nano (~3,2M paramètres) : la plus rapide, adaptée CPU
+# Autres variantes : yolov8s (small), yolov8m (medium), yolov8l (large), yolov8x (x-large)
+model = YOLO("yolov8n.pt")  # Si le fichier .pt n'existe pas, téléchargement auto
 
-# Image de test
-img = np.zeros((400, 500, 3), dtype=np.uint8)
-cv2.rectangle(img, (50, 60), (200, 220), (255, 255, 255), -1)
-cv2.circle(img, (350, 200), 70, (200, 200, 0), -1)
+# ----- Étape 2 : Création d'une image de test synthétique -----
+# Deux formes simples pour vérifier le fonctionnement de YOLO
+img = np.zeros((400, 500, 3), dtype=np.uint8)  # Image BGR noire 400x500
+cv2.rectangle(img, (50, 60), (200, 220), (255, 255, 255), -1)  # Rectangle blanc rempli
+cv2.circle(img, (350, 200), 70, (200, 200, 0), -1)  # Cercle orange rempli
 
-# Inférence
+# ----- Étape 3 : Inférence YOLO -----
+# YOLO accepte directement une image OpenCV (BGR) sans conversion manuelle
+# conf=0.25 : seuil de confiance minimal. Les détections < 0.25 sont filtrées.
+# verbose=False : réduit les logs dans la console
+# Returns : liste d'objets Results (un par image dans le batch)
 results = model(img, conf=0.25, verbose=False)
 
-# Affichage des résultats
-for r in results:
-    for box in r.boxes:
-        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-        conf = box.conf[0].cpu().numpy()
-        cls = int(box.cls[0].cpu().numpy())
-        name = model.names[cls]
+# ----- Étape 4 : Affichage des détections -----
+for r in results:  # r = Results pour une image
+    for box in r.boxes:  # r.boxes = objet Boxes contenant toutes les détections
+        # box.xyxy : tenseur (N, 4) avec les coordonnées (x1, y1, x2, y2)
+        # .cpu().numpy() : déplace du GPU vers CPU et convertit en tableau NumPy
+        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()  # [0] = première (et unique) boîte
+        conf = box.conf[0].cpu().numpy()  # box.conf = tenseur (N,) des scores de confiance
+        cls = int(box.cls[0].cpu().numpy())  # box.cls = tenseur (N,) des indices de classe
+        name = model.names[cls]  # model.names[0]='person', model.names[16]='dog', etc.
         print(f"  {name}: conf={conf:.3f}, box=({x1:.0f}, {y1:.0f}, {x2:.0f}, {y2:.0f})")
 ```
 
@@ -292,47 +302,79 @@ for r in results:
 ### 6.2 Comparer Faster R-CNN et YOLO
 
 ```python
-import time
-import torch
-import cv2
-import numpy as np
-from ultralytics import YOLO
+import time  # Mesure du temps d'exécution
+import torch  # PyTorch (nécessaire pour torch.no_grad et les tenseurs)
+import cv2  # OpenCV pour la lecture et le prétraitement des images
+import numpy as np  # NumPy pour le calcul des moyennes/écarts-types
+from ultralytics import YOLO  # YOLOv8
 from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2, FasterRCNN_ResNet50_FPN_V2_Weights
 
-
-REAL_IMAGE_PATH = "labs/shared/assets/coco_dog.jpg"
-REAL_DOG_GT_BOX = (50, 35, 645, 555)
+# ----- Constantes : chemins et vérité terrain -----
+REAL_IMAGE_PATH = "labs/shared/assets/coco_dog.jpg"  # Image réelle d'un chien (dataset COCO)
+REAL_DOG_GT_BOX = (50, 35, 645, 555)  # Boîte GT approximative du chien dans cette image
 
 def benchmark_detector(detector_type, img, num_runs=5):
-    """Mesure le temps d'inférence moyen d'un détecteur."""
-    times = []
+    """
+    Mesure le temps d'inférence moyen et l'écart-type d'un détecteur.
+
+    Pourquoi plusieurs runs (num_runs) ?
+      - Le 1er appel peut inclure des coûts cachés (cache CPU, compilation JIT, allocation mémoire)
+      - En répétant et en moyennant, on obtient un temps représentatif du régime permanent
+      - L'écart-type (std) indique la stabilité : std faible = temps régulier, std fort = instable
+
+    Paramètres
+    ----------
+    detector_type : str
+        "frcnn" pour Faster R-CNN, "yolo" pour YOLOv8
+    img : np.ndarray BGR
+        Image d'entrée
+    num_runs : int
+        Nombre de répétitions pour lisser les variations
+    """
+    times = []  # Liste des temps mesurés
     for _ in range(num_runs):
-        start = time.time()
+        start = time.time()  # Chronomètre : début de la mesure
+
         if detector_type == "frcnn":
+            # ---- Faster R-CNN : nécessite une conversion manuelle ----
+            # OpenCV lit en BGR (H, W, C) -> torchvision attend RGB (C, H, W) dans [0,1]
             tensor = torch.from_numpy(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)).permute(2, 0, 1).float() / 255.0
-            with torch.no_grad():
-                _ = model_frcnn([tensor])
+            with torch.no_grad():  # ESSENTIEL : sans ça, PyTorch calcule les gradients (2x plus lent, 2x plus de mémoire)
+                _ = model_frcnn([tensor])  # Inférence : le modèle retourne boxes, labels, scores
         else:  # yolo
-            _ = model_yolo(img, verbose=False)
-        elapsed = time.time() - start
-        times.append(elapsed)
+            # ---- YOLO : accepte directement une image OpenCV BGR ----
+            # Ultralytics gère la normalisation et la conversion en interne
+            _ = model_yolo(img, verbose=False)  # Inférence directe, pas de conversion manuelle
+
+        elapsed = time.time() - start  # Chronomètre : fin de la mesure
+        times.append(elapsed)  # Stockage du temps mesuré
+
+    # Retourne la moyenne (mean) et l'écart-type (std) des temps mesurés
     return np.mean(times), np.std(times)
 
-# Chargement des modèles
-model_frcnn = fasterrcnn_resnet50_fpn_v2(weights=FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT, box_score_thresh=0.25)
-model_frcnn.eval()
-model_yolo = YOLO("yolov8n.pt")
+# ----- Chargement des deux modèles -----
+# Faster R-CNN avec ResNet-50 FPN (plus lent mais plus précis)
+# box_score_thresh=0.25 : seuil bas pour récupérer suffisamment de détections
+model_frcnn = fasterrcnn_resnet50_fpn_v2(
+    weights=FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT,
+    box_score_thresh=0.25
+)
+model_frcnn.eval()  # Mode évaluation (désactive dropout et batch norm)
 
-# Image de test
-img = cv2.imread("image.jpg")
+# YOLOv8 nano (plus rapide, adapté CPU)
+model_yolo = YOLO("yolov8n.pt")  # Téléchargement auto des poids COCO si nécessaire
 
-# Benchmark
-t_frcnn, std_frcnn = benchmark_detector("frcnn", img)
-t_yolo, std_yolo = benchmark_detector("yolo", img)
+# ----- Image de test -----
+img = cv2.imread("image.jpg")  # Lecture d'une image (ou utiliser labs/shared/assets/coco_dog.jpg)
 
-print(f"Faster R-CNN : {t_frcnn:.3f}s ± {std_frcnn:.3f}s")
-print(f"YOLOv8n      : {t_yolo:.3f}s ± {std_yolo:.3f}s")
-print(f"Ratio        : {t_frcnn/t_yolo:.1f}x plus rapide avec YOLO")
+# ----- Benchmark des deux détecteurs -----
+t_frcnn, std_frcnn = benchmark_detector("frcnn", img)  # Temps moyen de Faster R-CNN
+t_yolo, std_yolo = benchmark_detector("yolo", img)      # Temps moyen de YOLOv8n
+
+# ----- Affichage des résultats -----
+print(f"Faster R-CNN : {t_frcnn:.3f}s ± {std_frcnn:.3f}s")  # Ex: 3.540s ± 0.120s
+print(f"YOLOv8n      : {t_yolo:.3f}s ± {std_yolo:.3f}s")    # Ex: 0.110s ± 0.015s
+print(f"Ratio        : {t_frcnn/t_yolo:.1f}x plus rapide avec YOLO")  # Ex: 32.2x plus rapide
 ```
 
 **Explication détaillée du benchmark**
@@ -344,56 +386,86 @@ print(f"Ratio        : {t_frcnn/t_yolo:.1f}x plus rapide avec YOLO")
 ### 6.3 NMS manuel
 
 ```python
-import numpy as np
+import numpy as np  # Pour les opérations vectorisées (plus rapides que des boucles Python)
 
 def nms_manual(boxes, scores, iou_threshold=0.5):
-    """Non-Maximum Suppression implémentée from scratch."""
-    # Tri par score décroissant
-    indices = np.argsort(scores)[::-1]
-    keep = []
+    """
+    Non-Maximum Suppression (NMS) implémentée from scratch.
 
+    Principe :
+      Les détecteurs produisent souvent plusieurs boîtes très proches pour un même objet.
+      NMS garde UNIQUEMENT la meilleure boîte par objet et supprime les redondances.
+
+    Algorithme :
+      1. Trier les boîtes par score de confiance DÉCROISSANT
+      2. Prendre la boîte avec le meilleur score -> la garder
+      3. Supprimer toutes les autres boîtes qui la chevauchent TROP (IoU > seuil)
+      4. Répéter jusqu'à ce qu'il ne reste plus de boîtes
+
+    Paramètres
+    ----------
+    boxes : np.ndarray (N, 4)  -> toutes les boîtes détectées au format (x1, y1, x2, y2)
+    scores : np.ndarray (N,)   -> scores de confiance associés
+    iou_threshold : float      -> seuil IoU pour considérer 2 boîtes comme redondantes
+
+    Retourne
+    --------
+    keep : list[int]  -> indices des boîtes conservées après suppression
+    """
+    # Étape 1 : tri des indices par score décroissant
+    # np.argsort(scores) trie par ordre CROISSANT, [::-1] inverse l'ordre
+    # Exemple : scores = [0.8, 0.95, 0.5] -> indices = [1, 0, 2]
+    indices = np.argsort(scores)[::-1]  # Les meilleures boîtes en premier
+    keep = []  # Liste des indices des boîtes gardées
+
+    # Boucle principale : tant qu'il reste des candidates
     while len(indices) > 0:
-        current = indices[0]
-        keep.append(current)
+        current = indices[0]  # La meilleure boîte restante (score le plus élevé)
+        keep.append(current)  # On la garde définitivement
 
-        if len(indices) == 1:
+        if len(indices) == 1:  # C'était la dernière boîte
             break
 
-        remaining = indices[1:]
+        remaining = indices[1:]  # Les autres boîtes encore candidates
 
-        # Calcul IoU entre la boîte courante et les restantes
-        box_cur = boxes[current]
-        boxes_rem = boxes[remaining]
+        # Calcul vectorisé de l'IoU entre la boîte courante et toutes les restantes
+        box_cur = boxes[current]  # (4,) : boîte gardée
+        boxes_rem = boxes[remaining]  # (M, 4) : boîtes candidates
 
-        x_left = np.maximum(box_cur[0], boxes_rem[:, 0])
-        y_top = np.maximum(box_cur[1], boxes_rem[:, 1])
-        x_right = np.minimum(box_cur[2], boxes_rem[:, 2])
-        y_bottom = np.minimum(box_cur[3], boxes_rem[:, 3])
+        # ---- Calcul de l'intersection (vectorisé sur toutes les boîtes restantes) ----
+        x_left = np.maximum(box_cur[0], boxes_rem[:, 0])  # Max des bords gauches
+        y_top = np.maximum(box_cur[1], boxes_rem[:, 1])   # Max des bords hauts
+        x_right = np.minimum(box_cur[2], boxes_rem[:, 2]) # Min des bords droits
+        y_bottom = np.minimum(box_cur[3], boxes_rem[:, 3]) # Min des bords bas
 
-        w = np.maximum(0, x_right - x_left)
-        h = np.maximum(0, y_bottom - y_top)
-        inter = w * h
+        w = np.maximum(0, x_right - x_left)  # Largeur de l'intersection (>= 0)
+        h = np.maximum(0, y_bottom - y_top)  # Hauteur de l'intersection (>= 0)
+        inter = w * h  # Aire de l'intersection (vecteur de M valeurs)
 
-        area_cur = (box_cur[2] - box_cur[0]) * (box_cur[3] - box_cur[1])
-        area_rem = (boxes_rem[:, 2] - boxes_rem[:, 0]) * (boxes_rem[:, 3] - boxes_rem[:, 1])
-        union = area_cur + area_rem - inter
+        # ---- Calcul des aires individuelles ----
+        area_cur = (box_cur[2] - box_cur[0]) * (box_cur[3] - box_cur[1])  # Aire de la boîte courante
+        area_rem = (boxes_rem[:, 2] - boxes_rem[:, 0]) * (boxes_rem[:, 3] - boxes_rem[:, 1])  # Aires des M boîtes
+        union = area_cur + area_rem - inter  # Union = somme des aires - intersection
 
-        ious = inter / union
+        ious = inter / union  # IoU : vecteur de M valeurs (chaque IoU entre box_cur et une boîte restante)
 
-        # Garder seulement les boîtes avec IoU < seuil
-        indices = remaining[ious < iou_threshold]
+        # Étape 3 : suppression des boîtes trop proches
+        # On ne garde que les boîtes dont l'IoU avec la boîte courante est INFÉRIEUR au seuil
+        # (IoU < seuil = boîte différente, à conserver ; IoU >= seuil = même objet, à supprimer)
+        indices = remaining[ious < iou_threshold]  # Filtrage vectorisé : on garde les indices des boîtes non redondantes
 
-    return keep
+    return keep  # Liste des indices des boîtes conservées
 
-# Test
+# ----- Test avec 3 boîtes -----
 boxes = np.array([
-    [100, 100, 200, 200],
-    [110, 110, 210, 210],  # Overlap avec la 1ère
-    [300, 300, 400, 400],  # Pas d'overlap
+    [100, 100, 200, 200],  # Boîte A : score 0.95 (la meilleure)
+    [110, 110, 210, 210],  # Boîte B : score 0.80, CHEVAUCHEMENT FORT avec A (IoU > 0.5)
+    [300, 300, 400, 400],  # Boîte C : score 0.90, PAS D'OVERLAP avec A (IoU = 0)
 ])
-scores = np.array([0.95, 0.80, 0.90])
-kept = nms_manual(boxes, scores, iou_threshold=0.5)
-print(f"Boîtes gardées : {kept}")  # [0, 2] — la 2ème est supprimée par NMS
+scores = np.array([0.95, 0.80, 0.90])  # Scores de confiance
+kept = nms_manual(boxes, scores, iou_threshold=0.5)  # Seuil IoU = 0.5
+print(f"Boîtes gardées : {kept}")  # [0, 2] -> Boîte A (indice 0) et Boîte C (indice 2) conservées
+                                    # La boîte B (indice 1) est supprimée car trop proche de A
 ```
 
 **Explication détaillée de l'algorithme NMS**
@@ -793,22 +865,27 @@ Cet exercice visualise comment le nombre de détections varie avec le seuil de c
 ```python
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use("Agg")  # Backend non interactif
 import matplotlib.pyplot as plt
 
-thresholds = [r["threshold"] for r in threshold_results]
-num_dets = [r["num_detections"] for r in threshold_results]
-avg_ious = [r["avg_iou"] for r in threshold_results]
+# Récupération des données depuis threshold_results (généré par le sweep de seuil)
+thresholds = [r["threshold"] for r in threshold_results]  # Ex: [0.1, 0.25, 0.5, 0.75]
+num_dets = [r["num_detections"] for r in threshold_results]  # Nombre de détections à chaque seuil
+avg_ious = [r["avg_iou"] for r in threshold_results]  # IoU moyen à chaque seuil
 
+# Création d'une figure avec DEUX axes Y (échelles différentes)
 fig, ax1 = plt.subplots(figsize=(8, 4))
-ax1.plot(thresholds, num_dets, marker="o", color="steelblue", linewidth=2, label="Détections")
-ax1.set_xlabel("Seuil de confiance")
-ax1.set_ylabel("Nombre de détections", color="steelblue")
-ax1.tick_params(axis="y", labelcolor="steelblue")
 
-ax2 = ax1.twinx()
+# Axe Y gauche : nombre de détections (en bleu)
+ax1.plot(thresholds, num_dets, marker="o", color="steelblue", linewidth=2, label="Détections")
+ax1.set_xlabel("Seuil de confiance")  # Axe X : commun aux deux courbes
+ax1.set_ylabel("Nombre de détections", color="steelblue")  # Légende bleue
+ax1.tick_params(axis="y", labelcolor="steelblue")  # Couleur des graduations = bleu
+
+# Axe Y droit : IoU moyen (en rouge/coral)
+ax2 = ax1.twinx()  # Deuxième axe Y qui partage le même axe X
 ax2.plot(thresholds, avg_ious, marker="s", color="coral", linewidth=2, label="IoU moyen")
-ax2.set_ylabel("IoU moyen", color="coral")
+ax2.set_ylabel("IoU moyen", color="coral")  # Légende corail
 ax2.tick_params(axis="y", labelcolor="coral")
 
 plt.title("Impact du seuil de confiance sur les détections et l'IoU")
@@ -816,6 +893,9 @@ plt.grid(True, alpha=0.3)
 plt.savefig("outputs/jour3/figures/threshold_sweep.png", dpi=130)
 plt.close()
 print("Courbe sauvegardée : outputs/jour3/figures/threshold_sweep.png")
+# Interprétation : quand le seuil augmente, le nombre de détections DIMINUE
+# mais l'IoU moyen AUGMENTE (car seules les meilleures détections sont conservées).
+# C'est le compromis fondamental : quantité vs qualité.
 ```
 
 **Attendu** : la courbe montre clairement le compromis : moins de détections mais de meilleure qualité (IoU plus élevé) quand le seuil augmente.
@@ -823,23 +903,29 @@ print("Courbe sauvegardée : outputs/jour3/figures/threshold_sweep.png")
 ### 7.11 Exercice bonus — Synthèse recommandation
 
 ```python
-# Produire une recommandation basée sur les métriques
-speedup = metrics["speed"]["speedup_yolo_vs_frcnn"]
-iou_diff = metrics["iou"]["yolov8n_avg"] - metrics["iou"]["faster_rcnn_avg"]
+# ----- Analyse comparative et recommandation -----
+# On utilise les métriques calculées dans metrics pour produire une recommandation
+speedup = metrics["speed"]["speedup_yolo_vs_frcnn"]  # Combien de fois YOLO est plus rapide (ex: 31.2)
+iou_diff = metrics["iou"]["yolov8n_avg"] - metrics["iou"]["faster_rcnn_avg"]  # Différence d'IoU (ex: -0.014)
 
 print("\n" + "=" * 50)
 print("RECOMMANDATION")
 print("=" * 50)
-print(f"YOLO est {speedup:.1f}x plus rapide que Faster R-CNN")
-print(f"Différence d'IoU moyen : {iou_diff:+.3f}")
+print(f"YOLO est {speedup:.1f}x plus rapide que Faster R-CNN")  # Ex: "YOLO est 31.2x plus rapide"
+print(f"Différence d'IoU moyen : {iou_diff:+.3f}")  # Ex: "+0.000" (aucune différence) ou "-0.014" (légère perte)
+
 print()
+# Logique de décision : on compare le gain de vitesse à la perte de précision
 if speedup > 3 and iou_diff > -0.1:
+    # YOLO est BEAUCOUP plus rapide ET la perte de précision est négligeable
     print("→ Recommandation : YOLO est préférable pour du temps réel")
     print("  (gain de vitesse significatif, perte de précision négligeable)")
 elif iou_diff > 0.1:
+    # Faster R-CNN est significativement plus précis
     print("→ Recommandation : Faster R-CNN est préférable pour la précision")
     print("  (IoU significativement meilleur, vitesse acceptable)")
 else:
+    # Les deux sont comparables : le choix dépend du cas d'usage
     print("→ Recommandation : les deux modèles sont comparables")
     print("  Le choix dépend du compromis vitesse/précision souhaité")
 ```
@@ -849,36 +935,57 @@ else:
 Le syllabus mentionne explicitement YOLOv3 avec OpenCV. Le lab principal utilise YOLOv8n pour la simplicité d'installation et la robustesse, mais le principe OpenCV DNN reste le suivant : charger les fichiers `.cfg`, `.weights` et `.names`, construire un blob d'entrée, exécuter le réseau, puis appliquer le NMS.
 
 ```python
-import cv2
-import numpy as np
+import cv2  # OpenCV (inclut DNN pour charger des modèles externes)
+import numpy as np  # NumPy
 
+# ----- Étape 1 : Chargement du modèle YOLOv3 avec OpenCV DNN -----
+# YOLOv3 n'est pas inclus dans OpenCV, il faut télécharger :
+#   - yolov3.cfg  (fichier de configuration de l'architecture)
+#   - yolov3.weights (poids pré-entraînés, ~240 Mo)
+#   - coco.names (noms des 80 classes COCO)
 net = cv2.dnn.readNetFromDarknet("yolov3.cfg", "yolov3.weights")
 with open("coco.names", "r", encoding="utf-8") as f:
-    classes = [line.strip() for line in f]
+    classes = [line.strip() for line in f]  # Liste des noms de classes
 
+# ----- Étape 2 : Prétraitement de l'image -----
+# blobFromImage : convertit l'image en un "blob" (tenseur 4D) compatible avec le réseau
+#   1/255.0    : normalisation des pixels de [0,255] à [0,1]
+#   (416, 416) : redimensionnement à la taille d'entrée du réseau
+#   swapRB=True: convertit BGR -> RGB (OpenCV lit en BGR, Darknet attend du RGB)
+#   crop=False : pas de recadrage (l'image est déformée pour remplir 416x416)
 img = cv2.imread("labs/shared/assets/coco_dog.jpg")
 blob = cv2.dnn.blobFromImage(img, 1 / 255.0, (416, 416), swapRB=True, crop=False)
-net.setInput(blob)
+net.setInput(blob)  # Le blob devient l'entrée du réseau
 
+# ----- Étape 3 : Inférence (forward pass) -----
+# YOLOv3 a plusieurs couches de sortie (détection multi-échelle pour petits/moyens/grands objets)
+# Il faut récupérer les noms des couches de sortie pour obtenir les prédictions
 layer_names = net.getLayerNames()
 output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers().flatten()]
-outputs = net.forward(output_layers)
+outputs = net.forward(output_layers)  # Inférence : retourne les prédictions des 3 échelles
 
+# ----- Étape 4 : Parsing des prédictions -----
 boxes, confidences, class_ids = [], [], []
-height, width = img.shape[:2]
-for output in outputs:
-    for detection in output:
-        scores = detection[5:]
-        class_id = int(np.argmax(scores))
-        confidence = float(scores[class_id])
-        if confidence >= 0.5:
-            cx, cy, w, h = detection[:4] * np.array([width, height, width, height])
-            x = int(cx - w / 2)
-            y = int(cy - h / 2)
-            boxes.append([x, y, int(w), int(h)])
-            confidences.append(confidence)
-            class_ids.append(class_id)
+height, width = img.shape[:2]  # Dimensions originales de l'image (pour le rescaling)
+for output in outputs:  # output = prédictions à une échelle donnée
+    for detection in output:  # detection = [cx, cy, w, h, conf_obj, p_class1, p_class2, ...]
+        scores = detection[5:]  # Probabilités pour chaque classe (à partir de l'indice 5)
+        class_id = int(np.argmax(scores))  # Classe avec la plus haute probabilité
+        confidence = float(scores[class_id])  # Score de confiance pour cette classe
 
+        if confidence >= 0.5:  # Seuil de confiance : on ignore les détections faibles
+            # Les coordonnées cx, cy, w, h sont normalisées [0,1] -> on les remet à l'échelle
+            cx, cy, w, h = detection[:4] * np.array([width, height, width, height])
+            x = int(cx - w / 2)  # Conversion centre -> coin haut-gauche (format OpenCV)
+            y = int(cy - h / 2)
+            boxes.append([x, y, int(w), int(h)])  # Boîte au format (x, y, w, h)
+            confidences.append(confidence)  # Score de confiance
+            class_ids.append(class_id)  # Indice de la classe
+
+# ----- Étape 5 : Non-Maximum Suppression (suppression des redondances) -----
+# Après parsing, on a souvent plusieurs boîtes pour le même objet
+# NMSBoxes supprime les doublons : on garde la meilleure boîte par objet
+# Paramètres : boîtes, scores, score_threshold, nms_threshold
 indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
 ```
 
@@ -893,31 +1000,56 @@ indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
 Pour passer d'une image fixe à une vidéo, on applique exactement le même détecteur à chaque frame. En pratique, on mesure aussi les FPS pour vérifier si le modèle respecte la contrainte temps réel.
 
 ```python
-import cv2
-import time
-from ultralytics import YOLO
+import cv2  # OpenCV (capture vidéo et affichage)
+import time  # Mesure du temps pour calculer les FPS
+from ultralytics import YOLO  # YOLOv8
 
+# Chargement du modèle YOLOv8 (une seule fois, en dehors de la boucle)
 model = YOLO("yolov8n.pt")
-cap = cv2.VideoCapture(0)  # webcam ; remplacer par un chemin vidéo si besoin
+
+# Ouverture de la webcam (index 0 = caméra par défaut)
+# Alternative : remplacer 0 par le chemin d'un fichier vidéo (ex: "video.mp4")
+cap = cv2.VideoCapture(0)
+
+print("Appuyez sur 'q' pour quitter la détection temps réel")
 
 while True:
-    ok, frame = cap.read()
-    if not ok:
+    ok, frame = cap.read()  # Lecture d'une frame depuis la webcam
+    if not ok:  # Si la lecture échoue (caméra débranchée ou fin de vidéo)
         break
 
+    # Mesure du temps de début d'inférence
     start = time.time()
+
+    # Inférence YOLO sur la frame (conf=0.25 = seuil de confiance)
     results = model(frame, conf=0.25, verbose=False)
+
+    # Calcul des FPS : 1 / temps d'inférence (1e-6 évite la division par zéro)
     fps = 1 / max(time.time() - start, 1e-6)
 
-    annotated = results[0].plot()
+    # Annotation de l'image avec les boîtes détectées
+    annotated = results[0].plot()  # results[0].plot() dessine les boîtes, labels, scores
+
+    # Affichage des FPS sur l'image (en vert, en haut à gauche)
     cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+    # Affichage de la fenêtre
     cv2.imshow("Détection temps réel", annotated)
 
+    # Attente de 1ms + détection de la touche 'q' pour quitter
+    # cv2.waitKey(1) retourne le code ASCII de la touche pressée
+    # ord("q") = 113, on compare avec 0xFF pour obtenir le code 8 bits
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
+# Nettoyage : libération de la caméra et fermeture des fenêtres
 cap.release()
 cv2.destroyAllWindows()
+
+# Critères d'interprétation :
+# - 25-30 FPS  -> temps réel confortable
+# - 10-25 FPS  -> acceptable, léger décalage
+# - < 10 FPS   -> trop lent pour temps réel, réduire la taille d'entrée
 ```
 
 **Critère d'interprétation**
