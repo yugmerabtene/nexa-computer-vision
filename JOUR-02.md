@@ -304,12 +304,12 @@ print(f"Forme de la sortie : {output.shape}")  # torch.Size([1, 10])
 print(f"Nombre de paramètres : {sum(p.numel() for p in model.parameters()):,}")
 ```
 
-**Explication**
-- `nn.Conv2d` crée une couche de convolution 2D. `in_channels=3` pour une image RGB, `out_channels=32` signifie 32 filtres.
-- `nn.MaxPool2d` réduit la dimension spatiale par 2 (2x2 avec stride 2).
-- Après 2 pooling, une image 32x32 devient 8x8. D'où `64 * 8 * 8` dans le Linear.
-- `forward` définit le passage des données : features → classifier.
-- La dernière couche linéaire n'a pas de softmax : `CrossEntropyLoss` de PyTorch l'intègre.
+**Explication détaillée architecture par architecture**
+- **`nn.Conv2d(in_channels, out_channels, kernel_size, padding)`** : crée une couche de convolution 2D. `in_channels=3` pour une image RGB (3 canaux). `out_channels=32` signifie que 32 filtres différents sont appris : chacun détectera un motif visuel différent (bords horizontaux, verticaux, textures, etc.). `kernel_size=3` = filtre 3×3 pixels, le plus courant car il capture le voisinage immédiat. `padding=1` ajoute un bord de zéros pour que la sortie ait la même hauteur/largeur que l'entrée.
+- **`nn.MaxPool2d(kernel_size=2, stride=2)`** : réduit la dimension spatiale par 2. Pour chaque fenêtre 2×2, on garde la valeur maximale. L'image passe de 32×32 à 16×16. Ce choix n'est pas anodin : il réduit le nombre de paramètres suivants, rend le modèle robuste aux petites translations, et prévient le surapprentissage.
+- **Calcul de `64 * 8 * 8`** : après deux MaxPool2d(2), une image 32×32 devient 8×8. La dernière convolution produit 64 canaux, donc l'entrée de la couche Linear est un vecteur de 64 × 8 × 8 = 4096 valeurs. Si vous changez la taille d'entrée (par exemple 64×64), ce calcul change aussi (64 × 16 × 16 = 16384).
+- **`forward`** : définit le passage des données. Appelé automatiquement par `model(x)`. Ici, on enchaîne `self.features(x)` (convolution + pooling) puis `self.classifier(...)` (couches fully-connected).
+- **Pas de softmax dans le modèle** : `CrossEntropyLoss` de PyTorch combine log-softmax et negative log-likelihood. Si vous ajoutiez un softmax manuellement, la perte serait fausse. En inférence, utilisez `torch.softmax(output, dim=1)` ou `output.argmax(dim=1)` pour obtenir les probabilités ou la classe prédite.
 
 ### 6.2 Utiliser Faster R-CNN pré-entraîné
 
@@ -355,13 +355,13 @@ for box, label, score in zip(pred["boxes"], pred["labels"], pred["scores"]):
     print(f"  {name}: score={score:.3f}, box=({box[0]:.0f}, {box[1]:.0f}, {box[2]:.0f}, {box[3]:.0f})")
 ```
 
-**Explication**
-- `fasterrcnn_resnet50_fpn_v2` charge un Faster R-CNN avec ResNet-50 comme backbone.
-- `weights=DEFAULT` télécharge automatiquement les poids pré-entraînés sur COCO (80 classes).
-- `box_score_thresh=0.5` filtre les prédictions avec un score de confiance < 0.5.
-- Le modèle attend un tenseur de forme `(C, H, W)` avec des valeurs dans `[0, 1]`.
-- `torch.no_grad()` désactive le calcul du gradient pour l'inférence (plus rapide, moins de mémoire).
-- La sortie contient `boxes`, `labels`, et `scores`.
+**Explication détaillée**
+- **`fasterrcnn_resnet50_fpn_v2`** : architecture Faster R-CNN utilisant ResNet-50 (50 couches) comme backbone (extracteur de caractéristiques) avec FPN (Feature Pyramid Network). FPN améliore la détection multi-échelle en créant des pyramides de features à différentes résolutions. La version `v2` apporte des améliorations de la tête de détection par rapport à la v1.
+- **`weights=DEFAULT`** : télécharge automatiquement les poids pré-entraînés sur le dataset COCO (80 classes : personne, voiture, chien, chat, etc.). Le téléchargement n'a lieu qu'au premier appel ; les poids sont ensuite mis en cache.
+- **`box_score_thresh=0.5`** : seuil de confiance minimal. Toute prédiction avec un score < 0.5 est filtrée avant d'être retournée. Augmenter ce seuil (ex: 0.7) réduit le nombre de détections mais augmente la précision. Le baisser (ex: 0.1) récupère plus d'objets mais ajoute des faux positifs.
+- **Format attendu** : le modèle reçoit une liste de tenseurs. Chaque tenseur doit avoir la forme `(C, H, W)` avec `C=3` (RGB), et les valeurs doivent être normalisées entre 0 et 1 (float32). La conversion typique est : `img_tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).float() / 255.0`.
+- **`torch.no_grad()`** : désactive le calcul et le stockage des gradients. En inférence pure (pas d'entraînement), les gradients sont inutiles. Les désactiver réduit la mémoire utilisée (~50% de moins) et accélère le calcul (pas de rétropropagation).
+- **Sortie** : dictionnaire contenant `boxes` (tenseur N×4, coordonnées x1,y1,x2,y2), `labels` (tenseur N, entiers de 1 à 80 correspondant aux classes COCO), et `scores` (tenseur N, flottants entre 0 et 1). `N` est le nombre de détections après filtrage par `box_score_thresh`.
 
 ### 6.3 Calcul de métriques de détection
 
@@ -416,11 +416,13 @@ print(f"TP={metrics['tp']}, FP={metrics['fp']}, FN={metrics['fn']}")
 print(f"Précision={metrics['precision']:.2f}, Rappel={metrics['recall']:.2f}")
 ```
 
-**Explication**
-- Pour chaque prédiction, on cherche la boîte GT avec le meilleur IoU et la même classe.
-- Si IoU >= seuil (0.5) : vrai positif (TP). Sinon : faux positif (FP).
-- Les GT non matchés sont des faux négatifs (FN).
-- La précision mesure la fiabilité des détections, le rappel mesure la complétude.
+**Explication détaillée du calcul des métriques**
+- **Pour chaque prédiction** (boucle principale) : on cherche parmi toutes les GT non encore associées celle qui a le meilleur IoU avec la boîte prédite ET la même classe. Si l'IoU max ≥ seuil (0.5 par défaut) et la classe correspond, c'est un **vrai positif (TP)** et la GT est marquée comme "matchée" (ne pourra plus être associée à une autre prédiction). Sinon, c'est un **faux positif (FP)**.
+- **Pourquoi une GT ne peut être matchée qu'une seule fois ?** Sans cette règle, plusieurs prédictions superposées sur le même objet seraient toutes comptées comme TP, ce qui gonflerait artificiellement les performances. C'est le principe du matching "greedy" (glouton) utilisé dans l'évaluation COCO officielle.
+- **Faux négatifs (FN)** : à la fin, les GT qui n'ont été associées à aucune prédiction sont des objets que le détecteur a "manqués". Plus le seuil de score est haut, plus il y a de FN (on détecte moins d'objets).
+- **Précision = TP / (TP + FP)** : proportion de détections correctes parmi toutes les détections produites. Une haute précision signifie "quand je détecte quelque chose, c'est souvent juste". Faible = beaucoup de fausses alertes.
+- **Rappel = TP / (TP + FN)** : proportion d'objets réels qui ont été détectés. Un haut rappel signifie "je trouve presque tous les objets". Faible = je rate beaucoup d'objets.
+- **Compromis fondamental** : augmenter le seuil de confiance améliore la précision (moins de FP) mais diminue le rappel (plus de FN), et inversement. La courbe précision-rappel visualise ce compromis.
 
 ## 7. Lab pas à pas
 

@@ -274,11 +274,20 @@ for r in results:
         print(f"  {name}: conf={conf:.3f}, box=({x1:.0f}, {y1:.0f}, {x2:.0f}, {y2:.0f})")
 ```
 
-**Explication**
-- `YOLO("yolov8n.pt")` télécharge automatiquement les poids pré-entraînés sur COCO.
-- `yolov8n` est la version nano : ~3 millions de paramètres, très rapide sur CPU.
-- `conf=0.25` est le seuil de confiance par défaut. Les prédictions avec un score inférieur sont filtrées.
-- `r.boxes` contient les boîtes avec leurs scores et classes.
+**Explication détaillée**
+- **`YOLO("yolov8n.pt")`** : télécharge automatiquement les poids pré-entraînés sur le dataset COCO (80 classes) depuis le serveur d'Ultralytics. Le fichier est mis en cache localement pour les appels suivants. `yolov8n` = version **nano** (~3,2 millions de paramètres, taille ~6 Mo). C'est la plus légère et la plus rapide de la famille YOLOv8.
+- **Variantes YOLOv8** (du plus léger au plus lourd) :
+  - `yolov8n` (nano) : 3,2M params → rapide sur CPU, ~80 FPS sur GPU.
+  - `yolov8s` (small) : 11,2M params → bon compromis.
+  - `yolov8m` (medium) : 25,9M params → plus précis mais plus lent.
+  - `yolov8l` (large) : 43,7M params → haute précision.
+  - `yolov8x` (x-large) : 68,2M params → précision maximale.
+- **`conf=0.25`** : seuil de confiance minimum. Les détections avec un score < 0.25 sont ignorées. Plus le seuil est bas, plus on récupère de détections, mais aussi plus de faux positifs. C'est exactement l'équivalent de `box_score_thresh` dans Faster R-CNN.
+- **Structure de `r.boxes`** : l'objet `Boxes` contient :
+  - `r.boxes.xyxy` : tenseur (N, 4) avec les coordonnées (x1, y1, x2, y2).
+  - `r.boxes.conf` : tenseur (N,) avec les scores de confiance (0 à 1).
+  - `r.boxes.cls` : tenseur (N,) avec les indices de classe (0 à 79 pour COCO).
+  - `model.names` : dictionnaire associant chaque index à son nom lisible (ex: {0: 'person', 16: 'dog'}).
 
 ### 6.2 Comparer Faster R-CNN et YOLO
 
@@ -326,10 +335,11 @@ print(f"YOLOv8n      : {t_yolo:.3f}s ± {std_yolo:.3f}s")
 print(f"Ratio        : {t_frcnn/t_yolo:.1f}x plus rapide avec YOLO")
 ```
 
-**Explication**
-- On exécute chaque détecteur plusieurs fois pour obtenir un temps moyen stable.
-- `torch.no_grad()` est essentiel pour l'inférence PyTorch (sinon le gradient est calculé inutilement).
-- Le ratio montre combien de fois YOLO est plus rapide que Faster R-CNN.
+**Explication détaillée du benchmark**
+- **Pourquoi exécuter plusieurs fois (`num_runs=5`)** ? Le premier appel peut inclure des coûts d'initialisation (mise en cache CPU, allocation mémoire, compilation JIT). En répétant l'inférence et en faisant la moyenne, on obtient un temps représentatif du régime permanent. L'écart-type (`std`) indique la stabilité : un std faible = temps régulier.
+- **`torch.no_grad()` est OBLIGATOIRE** pour l'inférence PyTorch. Sans ce contexte, PyTorch calcule et stocke le graphe de calcul (graph) nécessaire à la rétropropagation (backward), ce qui consomme beaucoup de mémoire GPU/CPU et ralentit considérablement l'exécution. En mode `no_grad`, PyTorch exécute uniquement le forward pass, 2 à 5× plus rapide.
+- **Conversion BGR → RGB** : OpenCV lit les images en BGR, mais torchvision attend du RGB. Sans cette conversion, les performances du modèle seraient dégradées car les canaux de couleur seraient inversés par rapport aux poids pré-entraînés.
+- **Interprétation du ratio** : si `speedup = 31.0`, cela signifie que YOLO traite 31 images pendant que Faster R-CNN en traite 1. Concrètement, si Faster R-CNN met 3,5 secondes par image, YOLO met ~0,11 seconde, soit ~9 FPS pour Faster R-CNN contre ~300 FPS pour YOLO (en théorie, la camera est limitée à 30-60 FPS).
 
 ### 6.3 NMS manuel
 
@@ -386,11 +396,16 @@ kept = nms_manual(boxes, scores, iou_threshold=0.5)
 print(f"Boîtes gardées : {kept}")  # [0, 2] — la 2ème est supprimée par NMS
 ```
 
-**Explication**
-- On trie les boîtes par score décroissant.
-- On garde la meilleure, puis on supprime toutes les boîtes qui la superposent trop (IoU > seuil).
-- On répète jusqu'à ce qu'il n'y ait plus de boîtes.
-- C'est exactement l'algorithme utilisé en interne par les détecteurs modernes.
+**Explication détaillée de l'algorithme NMS**
+- **Étape 1 : tri** — On trie toutes les boîtes par score de confiance décroissant. La meilleure détection arrive en premier.
+- **Étape 2 : sélection** — On prend la boîte avec le score le plus élevé (première de la liste), on l'ajoute à la liste `keep` (boîtes gardées).
+- **Étape 3 : suppression** — Pour toutes les boîtes restantes, on calcule l'IoU avec la boîte sélectionnée. Si l'IoU dépasse `iou_threshold` (0.5 par défaut), la boîte est considérée comme redondante (elle détecte le même objet) et on la supprime de la liste des candidates.
+- **Étape 4 : répétition** — On reprend à l'étape 2 avec les boîtes restantes, jusqu'à épuisement.
+- **Pourquoi le NMS est-il nécessaire ?** Les détecteurs modernes (Faster R-CNN, YOLO) produisent souvent plusieurs boîtes très proches pour un même objet, surtout autour des bords. Sans NMS, la sortie serait illisible et les métriques (précision, rappel) seraient faussées (plusieurs TP pour un seul objet).
+- **Paramètres clés** :
+  - `iou_threshold` : plus il est bas (ex: 0.3), plus la suppression est agressive (moins de boîtes conservées). Plus il est haut (ex: 0.7), plus on garde de boîtes proches.
+  - `score_threshold` (seuil de confiance) : appliqué AVANT le NMS pour ne pas traiter les détections trop faibles.
+- **Variante** : le Soft-NMS (amélioration) ne supprime pas les boîtes redondantes mais réduit leur score proportionnellement à l'IoU, ce qui évite de perdre des détections sur des objets très proches.
 
 ## 7. Lab pas à pas
 
